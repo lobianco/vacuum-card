@@ -1,5 +1,5 @@
 {
-  "name": "Vacuum Card",
-  "render_readme": true,
+  "name": "Minimal Vacuum Card",
+  "render_readme": false,
   "filename": "vacuum-card.js"
 }

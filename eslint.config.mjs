@@ -7,7 +7,10 @@ import js from '@eslint/js';
 
 export default defineConfig([
   {
-    files: ['**/*.ts', '**/*.js', '**/*.mjs'],
+    ignores: ['dist/**'],
+  },
+  {
+    files: ['**/*.ts'],
     languageOptions: {
       globals: globals.browser,
       ecmaVersion: 2020,
@@ -21,6 +24,19 @@ export default defineConfig([
     rules: {
       ...js.configs.recommended.rules,
       ...tsPlugin.configs.recommended.rules,
+    },
+  },
+  {
+    files: ['**/*.mjs'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+      ecmaVersion: 2020,
+      sourceType: 'module',
+    },
+    rules: {
+      ...js.configs.recommended.rules,
     },
   },
 ]);

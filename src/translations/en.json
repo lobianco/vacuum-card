@@ -48,7 +48,7 @@
     "continue": "Continue",
     "pause": "Pause",
     "stop": "Stop",
-    "return_to_base": "Dock",
+    "return_to_base": "Return to dock",
     "locate": "Locate Vacuum",
     "not_available": "Vacuum is not available"
   },

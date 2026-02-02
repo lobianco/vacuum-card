@@ -6,7 +6,6 @@ import {
   HomeAssistant,
   ServiceCallRequest,
 } from 'custom-card-helpers';
-import registerTemplates from 'ha-template';
 import get from 'lodash/get';
 import localize from './localize';
 import styles from './styles.css';
@@ -22,8 +21,6 @@ import {
   VacuumActionParams,
 } from './types';
 import DEFAULT_IMAGE from './vacuum.svg';
-
-registerTemplates();
 
 // String in the right side will be replaced by Rollup
 const PKG_VERSION = 'PKG_VERSION_VALUE';
@@ -85,8 +82,46 @@ export class VacuumCard extends LitElement {
     return this.config.compact_view ? 3 : 8;
   }
 
+  private getWatchedEntities(): string[] {
+    const prefix = this.getEntityPrefix();
+    const entities = [
+      this.config.entity,
+      `sensor.${prefix}_status`,
+      `sensor.${prefix}_vacuum_error`,
+      `sensor.${prefix}_dock_dock_error`,
+      `binary_sensor.${prefix}_dock_mop_drying`,
+      `binary_sensor.${prefix}_cleaning`,
+      `sensor.${prefix}_current_room`,
+      `sensor.${prefix}_dock_mop_drying_remaining_time`,
+    ];
+
+    if (this.config.battery_entity) {
+      entities.push(this.config.battery_entity);
+    }
+
+    return entities;
+  }
+
   public shouldUpdate(changedProps: PropertyValues): boolean {
-    return hasConfigOrEntityChanged(this, changedProps, false);
+    if (hasConfigOrEntityChanged(this, changedProps, false)) {
+      return true;
+    }
+
+    // Also update when any watched entity changes
+    if (changedProps.has('hass')) {
+      const oldHass = changedProps.get('hass') as HomeAssistant | undefined;
+      if (oldHass) {
+        for (const entityId of this.getWatchedEntities()) {
+          const oldState = oldHass.states[entityId]?.state;
+          const newState = this.hass.states[entityId]?.state;
+          if (oldState !== newState) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
   }
 
   protected updated(changedProps: PropertyValues) {
@@ -153,11 +188,6 @@ export class VacuumCard extends LitElement {
     }
   }
 
-  private handleSpeed(e: PointerEvent): void {
-    const fan_speed = (<HTMLDivElement>e.target).getAttribute('value');
-    this.callVacuumService('set_fan_speed', { request: false }, { fan_speed });
-  }
-
   private handleVacuumAction(
     action: string,
     params: VacuumActionParams = { request: true },
@@ -180,49 +210,25 @@ export class VacuumCard extends LitElement {
     };
   }
 
-  private renderSource(): Template {
-    const { fan_speed: source, fan_speed_list: sources } = this.getAttributes(
-      this.entity,
-    );
+  private renderBattery(): Template {
+    let battery_level: number | string | undefined;
 
-    if (!sources || !source) {
+    if (this.config.battery_entity) {
+      const batteryEntity = this.hass.states[this.config.battery_entity];
+      battery_level = batteryEntity
+        ? Math.round(Number(batteryEntity.state))
+        : undefined;
+    } else {
+      battery_level = this.getAttributes(this.entity).battery_level;
+    }
+
+    if (battery_level === undefined) {
       return nothing;
     }
 
-    const selected = sources.indexOf(source);
-
-    return html`
-      <div class="tip">
-        <ha-button-menu @click="${(e: Event) => e.stopPropagation()}">
-          <div slot="trigger">
-            <ha-icon icon="mdi:fan"></ha-icon>
-            <span class="icon-title">
-              ${localize(`source.${source.toLowerCase()}`) || source}
-            </span>
-          </div>
-          ${sources.map(
-            (item, index) => html`
-              <mwc-list-item
-                ?activated=${selected === index}
-                value=${item}
-                @click=${this.handleSpeed}
-              >
-                ${localize(`source.${item.toLowerCase()}`) || item}
-              </mwc-list-item>
-            `,
-          )}
-        </ha-button-menu>
-      </div>
-    `;
-  }
-
-  private renderBattery(): Template {
-    const { battery_level, battery_icon } = this.getAttributes(this.entity);
-
     return html`
       <div class="tip" @click="${() => this.handleMore()}">
-        <ha-icon icon="${battery_icon}"></ha-icon>
-        <span class="icon-title">${battery_level}%</span>
+        <span class="battery-label">⚡️ ${battery_level}%</span>
       </div>
     `;
   }
@@ -256,6 +262,65 @@ export class VacuumCard extends LitElement {
     `;
   }
 
+  private processValueTemplate(
+    rawValue: string | number,
+    template?: string,
+  ): string | number {
+    let value = typeof rawValue === 'string' ? parseFloat(rawValue) : rawValue;
+
+    // If not a valid number, return the raw value as-is
+    if (isNaN(value)) {
+      return rawValue;
+    }
+
+    // If no template, just round to integer
+    if (!template) {
+      return Math.round(value);
+    }
+
+    // Parse and apply common Jinja2 filters
+    // Handle: {{ value | float(0) | round(1) | int }}
+    const filters = template.match(/\|\s*(\w+)(?:\(([^)]*)\))?/g) || [];
+
+    for (const filter of filters) {
+      const match = filter.match(/\|\s*(\w+)(?:\(([^)]*)\))?/);
+      if (!match) continue;
+
+      const [, filterName, args] = match;
+
+      switch (filterName) {
+        case 'float': {
+          const defaultVal = args ? parseFloat(args) : 0;
+          value = isNaN(value) ? defaultVal : value;
+          break;
+        }
+        case 'int': {
+          value = Math.trunc(value);
+          break;
+        }
+        case 'round': {
+          const decimals = args ? parseInt(args, 10) : 0;
+          value = Number(value.toFixed(decimals));
+          break;
+        }
+        case 'abs': {
+          value = Math.abs(value);
+          break;
+        }
+      }
+    }
+
+    // Final safety: if result is still a float with many decimals, round it
+    if (!Number.isInteger(value)) {
+      // Check if the template intended decimal places
+      const roundMatch = template.match(/round\((\d+)\)/);
+      const intendedDecimals = roundMatch ? parseInt(roundMatch[1], 10) : 0;
+      value = Number(value.toFixed(intendedDecimals));
+    }
+
+    return value;
+  }
+
   private renderStats(state: VacuumEntityState): Template {
     const statsList =
       this.config.stats[state] || this.config.stats.default || [];
@@ -266,26 +331,19 @@ export class VacuumCard extends LitElement {
           return nothing;
         }
 
-        let state = '';
+        let rawValue: string | number = '';
 
         if (entity_id && attribute) {
-          state = get(this.hass.states[entity_id].attributes, attribute);
+          rawValue = get(this.hass.states[entity_id].attributes, attribute);
         } else if (attribute) {
-          state = get(this.entity.attributes, attribute);
+          rawValue = get(this.entity.attributes, attribute);
         } else if (entity_id) {
-          state = this.hass.states[entity_id].state;
+          rawValue = this.hass.states[entity_id].state;
         } else {
           return nothing;
         }
 
-        const value = html`
-          <ha-template
-            hass=${this.hass}
-            template=${value_template}
-            value=${state}
-            variables=${{ value: state }}
-          ></ha-template>
-        `;
+        const value = this.processValueTemplate(rawValue, value_template);
 
         return html`
           <div class="stats-block" @click="${() => this.handleMore(entity_id)}">
@@ -314,20 +372,106 @@ export class VacuumCard extends LitElement {
     return html` <div class="vacuum-name">${friendly_name}</div> `;
   }
 
-  private renderStatus(): Template {
-    const { status } = this.getAttributes(this.entity);
-    const localizedStatus =
-      localize(`status.${status.toLowerCase()}`) || status;
+  private getEntityPrefix(): string {
+    // Extract prefix from entity like "vacuum.rocky" -> "rocky"
+    const entityId = this.config.entity;
+    return entityId.split('.')[1] || '';
+  }
 
+  private getState(entityId: string): string {
+    const entity = this.hass.states[entityId];
+    return entity?.state ?? '';
+  }
+
+  private isState(entityId: string, state: string): boolean {
+    return this.getState(entityId) === state;
+  }
+
+  private formatStatus(status: string): string {
+    // Convert snake_case to Title Case
+    if (!status || ['unknown', 'unavailable', 'none', ''].includes(status)) {
+      return 'Idle';
+    }
+    const formatted = status.replace(/_/g, ' ').toLowerCase();
+    return formatted.charAt(0).toUpperCase() + formatted.slice(1);
+  }
+
+  private buildStatusText(): string {
+    const prefix = this.getEntityPrefix();
+
+    // Get all relevant states
+    const status = this.getState(`sensor.${prefix}_status`);
+    const vacuumError = this.getState(`sensor.${prefix}_vacuum_error`);
+    const dockError = this.getState(`sensor.${prefix}_dock_dock_error`);
+    const isDrying = this.isState(
+      `binary_sensor.${prefix}_dock_mop_drying`,
+      'on',
+    );
+    const isCleaning = this.isState(`binary_sensor.${prefix}_cleaning`, 'on');
+    const currentRoom = this.getState(`sensor.${prefix}_current_room`);
+    const dryingSecsStr = this.getState(
+      `sensor.${prefix}_dock_mop_drying_remaining_time`,
+    );
+    const dryingSecs = parseInt(dryingSecsStr, 10) || 0;
+
+    // Check for vacuum error
+    if (
+      vacuumError &&
+      !['none', 'unknown', 'unavailable', ''].includes(vacuumError)
+    ) {
+      return `Error: ${this.formatStatus(vacuumError)}`;
+    }
+
+    // Check for dock error
+    if (
+      dockError &&
+      !['ok', 'none', 'unknown', 'unavailable', ''].includes(dockError)
+    ) {
+      return `Dock: ${this.formatStatus(dockError)}`;
+    }
+
+    // Check if mop is drying
+    if (isDrying) {
+      const totalMins = Math.ceil(dryingSecs / 60);
+      const hours = Math.floor(totalMins / 60);
+      const mins = totalMins % 60;
+
+      let timeStr = '—';
+      if (totalMins > 0) {
+        if (hours > 0 && mins > 0) {
+          timeStr = `${hours}h ${mins}m left`;
+        } else if (hours > 0) {
+          timeStr = `${hours}h left`;
+        } else {
+          timeStr = `${totalMins}m left`;
+        }
+      }
+      return `Mop Drying · ${timeStr}`;
+    }
+
+    // Check if cleaning and show current room
+    if (
+      isCleaning &&
+      currentRoom &&
+      !['unknown', 'unavailable', 'none', ''].includes(currentRoom)
+    ) {
+      return `Cleaning ${currentRoom.toLowerCase()}`;
+    }
+
+    // Fall back to formatted status
+    return this.formatStatus(status);
+  }
+
+  private renderStatus(): Template {
     if (!this.config.show_status) {
       return nothing;
     }
 
+    const statusText = this.buildStatusText();
+
     return html`
       <div class="status">
-        <span class="status-text" alt=${localizedStatus}>
-          ${localizedStatus}
-        </span>
+        <span class="status-text" alt=${statusText}> ${statusText} </span>
         <ha-circular-progress
           .indeterminate=${this.requestInProgress}
           size="small"
@@ -350,18 +494,28 @@ export class VacuumCard extends LitElement {
       case 'cleaning': {
         return html`
           <div class="toolbar">
-            <paper-button @click="${this.handleVacuumAction('pause')}">
-              <ha-icon icon="hass:pause"></ha-icon>
-              ${localize('common.pause')}
-            </paper-button>
-            <paper-button @click="${this.handleVacuumAction('stop')}">
-              <ha-icon icon="hass:stop"></ha-icon>
-              ${localize('common.stop')}
-            </paper-button>
-            <paper-button @click="${this.handleVacuumAction('return_to_base')}">
-              <ha-icon icon="hass:home-map-marker"></ha-icon>
-              ${localize('common.return_to_base')}
-            </paper-button>
+            <div
+              class="toolbar-button"
+              @click="${this.handleVacuumAction('pause')}"
+            >
+              <ha-icon-button>
+                <ha-icon icon="hass:pause"></ha-icon>
+              </ha-icon-button>
+              <span class="toolbar-button-text"
+                >${localize('common.pause')}</span
+              >
+            </div>
+            <div
+              class="toolbar-button"
+              @click="${this.handleVacuumAction('return_to_base')}"
+            >
+              <ha-icon-button>
+                <ha-icon icon="hass:home-map-marker"></ha-icon>
+              </ha-icon-button>
+              <span class="toolbar-button-text"
+                >${localize('common.return_to_base')}</span
+              >
+            </div>
           </div>
         `;
       }
@@ -369,42 +523,36 @@ export class VacuumCard extends LitElement {
       case 'paused': {
         return html`
           <div class="toolbar">
-            <paper-button
+            <div
+              class="toolbar-button"
               @click="${this.handleVacuumAction('resume', {
                 defaultService: 'start',
                 request: true,
               })}"
             >
-              <ha-icon icon="hass:play"></ha-icon>
-              ${localize('common.continue')}
-            </paper-button>
-            <paper-button @click="${this.handleVacuumAction('return_to_base')}">
-              <ha-icon icon="hass:home-map-marker"></ha-icon>
-              ${localize('common.return_to_base')}
-            </paper-button>
+              <ha-icon-button>
+                <ha-icon icon="hass:play"></ha-icon>
+              </ha-icon-button>
+              <span class="toolbar-button-text"
+                >${localize('common.continue')}</span
+              >
+            </div>
+            <div
+              class="toolbar-button"
+              @click="${this.handleVacuumAction('return_to_base')}"
+            >
+              <ha-icon-button>
+                <ha-icon icon="hass:home-map-marker"></ha-icon>
+              </ha-icon-button>
+              <span class="toolbar-button-text"
+                >${localize('common.return_to_base')}</span
+              >
+            </div>
           </div>
         `;
       }
 
-      case 'returning': {
-        return html`
-          <div class="toolbar">
-            <paper-button
-              @click="${this.handleVacuumAction('resume', {
-                defaultService: 'start',
-                request: true,
-              })}"
-            >
-              <ha-icon icon="hass:play"></ha-icon>
-              ${localize('common.continue')}
-            </paper-button>
-            <paper-button @click="${this.handleVacuumAction('pause')}">
-              <ha-icon icon="hass:pause"></ha-icon>
-              ${localize('common.pause')}
-            </paper-button>
-          </div>
-        `;
-      }
+      case 'returning':
       case 'docked':
       case 'idle':
       default: {
@@ -416,40 +564,17 @@ export class VacuumCard extends LitElement {
               }
             };
             return html`
-              <ha-icon-button label="${name}" @click="${execute}">
-                <ha-icon icon="${icon}"></ha-icon>
-              </ha-icon-button>
+              <div class="toolbar-button" @click="${execute}">
+                <ha-icon-button>
+                  <ha-icon icon="${icon}"></ha-icon>
+                </ha-icon-button>
+                <span class="toolbar-button-text">${name}</span>
+              </div>
             `;
           },
         );
 
-        const dockButton = html`
-          <ha-icon-button
-            label="${localize('common.return_to_base')}"
-            @click="${this.handleVacuumAction('return_to_base')}"
-            ><ha-icon icon="hass:home-map-marker"></ha-icon>
-          </ha-icon-button>
-        `;
-
-        return html`
-          <div class="toolbar">
-            <ha-icon-button
-              label="${localize('common.start')}"
-              @click="${this.handleVacuumAction('start')}"
-              ><ha-icon icon="hass:play"></ha-icon>
-            </ha-icon-button>
-
-            <ha-icon-button
-              label="${localize('common.locate')}"
-              @click="${this.handleVacuumAction('locate', { request: false })}"
-              ><ha-icon icon="mdi:map-marker"></ha-icon>
-            </ha-icon-button>
-
-            ${state === 'idle' ? dockButton : ''}
-            <div class="fill-gap"></div>
-            ${buttons}
-          </div>
-        `;
+        return html` <div class="toolbar">${buttons}</div> `;
       }
     }
   }
@@ -478,16 +603,7 @@ export class VacuumCard extends LitElement {
         <ha-ripple></ha-ripple>
         <div class="preview">
           <div class="header">
-            <div class="tips">
-              ${this.renderSource()} ${this.renderBattery()}
-            </div>
-            <ha-icon-button
-              class="more-info"
-              icon="mdi:dots-vertical"
-              ?more-info="true"
-              @click="${() => this.handleMore()}"
-              ><ha-icon icon="mdi:dots-vertical"></ha-icon
-            ></ha-icon-button>
+            <div class="tips">${this.renderBattery()}</div>
           </div>
 
           ${this.renderMapOrImage(this.entity.state)}

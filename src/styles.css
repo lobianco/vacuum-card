@@ -154,14 +154,6 @@ ha-card {
   opacity: 50%;
 }
 
-.fill-gap {
-  flex-grow: 1;
-}
-
-.more-info ha-icon {
-  display: flex;
-}
-
 .status {
   display: flex;
   align-items: center;
@@ -174,7 +166,7 @@ ha-card {
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
-  margin-left: calc(28px + var(--vc-spacing)); /* size + margin of spinner */
+  margin-left: 0;
 }
 
 .status mwc-circular-progress {
@@ -240,26 +232,27 @@ ha-icon {
   border-top: 1px solid var(--vc-divider-color);
 }
 
-.toolbar ha-icon-button {
-  color: var(--vc-toolbar-text-color);
+.toolbar-button {
+  display: flex;
   flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  padding: 8px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.toolbar-button-text {
+  color: var(--vc-toolbar-text-color);
+  font-size: 12px;
+  margin-top: -4px;
+}
+
+.toolbar-button ha-icon-button {
+  color: var(--vc-toolbar-text-color);
   width: 44px;
   height: 44px;
   --mdc-icon-button-size: 44px;
-}
-
-.toolbar paper-button {
-  color: var(--vc-toolbar-text-color);
-  display: flex;
-  align-items: center;
-  margin-right: 10px;
-  padding: 15px 10px;
-  cursor: pointer;
-
-  & ha-icon {
-    margin-right: 5px;
-    color: var(--vc-toolbar-icon-color);
-  }
 }
 
 .toolbar ha-icon {
@@ -267,8 +260,7 @@ ha-icon {
   display: flex;
 }
 
-.icon-title {
-  display: inline-block;
-  vertical-align: middle;
-  padding: 0 3px;
+.battery-label {
+  font-size: 14px;
+  color: var(--vc-secondary-text-color);
 }
